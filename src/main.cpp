@@ -2,13 +2,23 @@
 #include "config.h"
 #include "endstop.h"
 #include <SerialFlash.h>
-//#include "TMRpcm.h"
+#include "AudioFileSourceFunction.h"
+#include "AudioOutputI2SNoDAC.h"
+#include "AudioGeneratorWAV.h"
 
 bool ledIsOn = false;
 bool flashReady = false;
 bool fsRead = false;
+uint32_t flashSize = 0;
+uint32_t fileReadIndex = 0;
+int blockSize = 1024;
+
 unsigned long ledTime = 0;
 int slideIndex = 0;
+
+AudioGeneratorWAV *wav;
+AudioFileSourceFunction *file;
+AudioOutputI2SNoDAC *audioOutput;
 
 // Endstop motorLoopEndstop(MOTOR_LOOP_BTN, INPUT, 10);
 // Endstop cartridgeEndstop(CARTIDGE_ENDSTOP, INPUT, 200);
@@ -37,13 +47,16 @@ void setup() {
 
   Serial.println("---------== BEGIN ==------------- ");
 
+  pinMode(LED_BUILTIN, OUTPUT);
+
+  audioOutput = new AudioOutputI2SNoDAC(SPEAKER_PIN);
+  wav = new AudioGeneratorWAV();
+
+  wav->SetBufferSize(blockSize);
+
   // motorLoopEndstop.registerOnTtriggered(onMotorLoop);
   // cartridgeEndstop.registerOnTtriggered(onCartridgeTrigger);
 
-  // // tmrpcm.speakerPin = SPEAKER_PIN;
-  // // tmrpcm.setVolume(3);
-
-  pinMode(LED_BUILTIN, OUTPUT);
   // pinMode(MOTOR_PIN, OUTPUT);
   // pinMode(LIGHTS_PIN, OUTPUT);
 
@@ -55,6 +68,7 @@ void setup() {
 }
 
 void loop() {
+  return;
   // if (ledTime < millis()) {
   //   if (ledIsOn) {
   //     digitalWrite(LED_BUILTIN, HIGH);
@@ -72,45 +86,61 @@ void loop() {
 
   if (!flashReady) {
     flashReady = SerialFlash.begin(FLASH_CS);
-  } else if(!fsRead && SerialFlash.ready()) {
+  } else if (wav->isRunning()) {
+      if (!wav->loop()) wav->stop();
+  } else if (!SerialFlash.ready()) {
+    Serial.println("WAitin for cartridge");
+  } else if (flashSize == 0) {
     uint8_t id[5];
-    uint8_t sn[8];
+    uint8_t sn[8];         // 25%
+
     SerialFlash.readID(id);
     SerialFlash.readSerialNumber(sn);
+
+    flashSize = 1UL << id[2];
+    
     Serial.print("Cartrige inserted ");
 
     Serial.printf("ID: %02X %02X %d\n", id[0], id[1], id[2]);
     Serial.printf("Serial Number: %02X %02X %02X %02X %02X %02X %02X %02X\n", sn[0], sn[1], sn[2], sn[3], sn[4], sn[5], sn[6], sn[7]);
-
+    Serial.printf("Capacity: %d\n", flashSize);
+    Serial.println();
+  } else {
     SerialFlash.opendir();
     Serial.println("Reading FS");
 
-    uint32_t sig[2];
+    float hz = 440.f;
 
-    SerialFlash.read(0, sig, 8);
+    uint32_t bytes_per_sec = 8000U * 1 * 16U / 8;
 
-    Serial.printf("Max FS size %08X %08X\n", sig[0], sig[1]);
+    file = new AudioFileSourceFunction(blockSize / bytes_per_sec);
+    file->addAudioGenerators([&](const float time) {
+      float v = sin(TWO_PI * hz * time);  // generate sine wave
+      v *= fmod(time, 1.f);               // change linear
+      v *= 0.5;                           // scale
+      return v;
+    });
 
-    char fileName[256];
+    byte data[blockSize];
+    uint32_t sizeI = sizeof(data);
 
-    SerialFlash.read(0, fileName, sizeof(fileName));
+    if ((fileReadIndex + sizeI) > flashSize) {
+        sizeI = flashSize - fileReadIndex;
+    }
 
-    Serial.println(fileName);
+    if (sizeI == 0) {
+      fileReadIndex = flashSize;
+      return;
+    }
 
-    //uint32_t fileSize;
+    SerialFlash.read(fileReadIndex, data, sizeI);
 
-    // while (SerialFlash.readdir(fileName, sizeof(fileName), fileSize)) {
-    //   Serial.print("/");
-    //   Serial.print(fileName);
-    //   Serial.printf("(%d)", fileSize);
-    //   Serial.println();
-    // }
+    file->read(data, sizeI);
+    wav->begin(file, audioOutput);
 
-    Serial.println("Reading FS done");
-
-    fsRead = true;
+    fileReadIndex += sizeI;
   }
 
-  // motorLoopEndstop.loop();
-  // cartridgeEndstop.loop();
+    // motorLoopEndstop.loop();
+    // cartridgeEndstop.loop();
 }
