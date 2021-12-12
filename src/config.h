@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 
-#define SERIAL_SPEED 9600
+#define SERIAL_SPEED 115200
 #define CARTIDGE_ENDSTOP D8			// GPIO02
 #define MOTOR_LOOP_BTN D7			// GPIO04
 #define MOTOR_PIN D6			// GPIO05

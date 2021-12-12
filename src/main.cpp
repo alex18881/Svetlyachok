@@ -2,9 +2,11 @@
 #include "config.h"
 #include "endstop.h"
 #include <SerialFlash.h>
-#include "AudioFileSourceFunction.h"
-#include "AudioOutputI2SNoDAC.h"
-#include "AudioGeneratorWAV.h"
+#include "AudioFileSourceSvetlyachok.h"
+#include <AudioOutputI2SNoDAC.h>
+#include <AudioGeneratorWAV.h>
+
+#define AUDIO_GENERATOR AudioGeneratorWAV
 
 bool ledIsOn = false;
 bool flashReady = false;
@@ -20,26 +22,15 @@ unsigned long ledTime = 0;
 int slideIndex = 0;
 const int slidesCount = 18;
 
-AudioGeneratorWAV *wav;
-AudioFileSourceFunction *file;
+AUDIO_GENERATOR *audioGenerator;
 AudioOutputI2SNoDAC *audioOutput;
-uint16_t channels = 1U;
-uint32_t sample_per_sec = 4410U;
-uint32_t bits_per_sample = 8;
-uint32_t bytes_per_sec = sample_per_sec * channels * bits_per_sample / 8;
 uint32_t soundsAddresses[slidesCount + 1];
+
+byte prevByte = 0xFF;
 
 // Endstop motorLoopEndstop(MOTOR_LOOP_BTN, INPUT, 10);
 // Endstop cartridgeEndstop(CARTIDGE_ENDSTOP, INPUT, 200);
 //TMRpcm tmrpcm;
-
-float sine_wave(const float time) {
-  char data[1];
-
-  SerialFlash.read(fileReadIndex++, data, 1);
-
-  return (float)data[0] / 1024.f;
-}
 
 void toggleMotor(bool on) {
 
@@ -70,10 +61,11 @@ void setup() {
   delay(500);
   digitalWrite(LED_BUILTIN, LOW);
 
-  audioOutput = new AudioOutputI2SNoDAC(SPEAKER_PIN);
-  wav = new AudioGeneratorWAV();
+  audioLogger = &Serial;
+  audioOutput = new AudioOutputI2SNoDAC();
+  audioGenerator = new AUDIO_GENERATOR();
 
-  wav->SetBufferSize(blockSize);
+  //audioGenerator->SetBufferSize(blockSize);
 
   // motorLoopEndstop.registerOnTtriggered(onMotorLoop);
   // cartridgeEndstop.registerOnTtriggered(onCartridgeTrigger);
@@ -127,8 +119,10 @@ void loop() {
 
   if (!flashReady) {
     flashReady = SerialFlash.begin(FLASH_CS);
-  } else if (wav->isRunning()) {
-    if (!wav->loop()) wav->stop();
+  } else if (audioGenerator->isRunning()) {
+    if (!audioGenerator->loop()) {
+      audioGenerator->stop();
+    }
   } else if (!SerialFlash.ready()) {
     Serial.println("WAitin for cartridge");
   } else if (flashSize == 0) { // Read cartridge size and serial
@@ -178,23 +172,12 @@ void loop() {
     Serial.printf("Showing slide %d ", slideIndex);
     fileReadIndex = soundsAddresses[slideIndex + 1];
     uint32_t endAddress = slideIndex + 2 < slidesCount ? soundsAddresses[slideIndex + 2] : flashSize;
-    uint32_t sizeI = endAddress - fileReadIndex;
 
-    if ((fileReadIndex + sizeI) > flashSize) {
-      sizeI = flashSize - fileReadIndex;
-    }
+    Serial.printf("WAW %d: %d - %d\n", slideIndex, fileReadIndex, endAddress);
 
-    if (sizeI == 0 || fileReadIndex >= flashSize) {
-      fileReadIndex = flashSize;
-      return;
-    }
-
-    float seconds = (float)sizeI / (float)bytes_per_sec;
-    Serial.printf("WAW %db, %fs, %dsamp/s, %db/s\n", sizeI, seconds, sample_per_sec, bits_per_sample);
-
-    file = new AudioFileSourceFunction(seconds, channels, sample_per_sec, bits_per_sample);
-    file->addAudioGenerators(sine_wave);
-    wav->begin(file, audioOutput);
+    AudioFileSourceSvetlyachok *file = new AudioFileSourceSvetlyachok(fileReadIndex, endAddress);
+    audioGenerator->begin(file, audioOutput);
+    delay(200);
 
     slideIndex++;
   }
